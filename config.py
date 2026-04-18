@@ -12,6 +12,7 @@ MODEL_NAME = "llama3.2:3b"
 WORKSPACE_DIR = Path.home() / "task-automator-workspace"
 NOTES_DIR = Path.home() / ".task-automator"
 NOTES_FILE = NOTES_DIR / "notes.json"
+HISTORY_FILE = NOTES_DIR / "history.json"
 
 
 def ensure_dirs():
@@ -90,11 +91,45 @@ def check_ollama() -> bool:
     return True
 
 
-def get_llm():
-    """Create and return a ChatOllama instance."""
+def get_available_models() -> list[str]:
+    """Get list of locally available Ollama models."""
+    try:
+        req = urllib.request.Request(f"{OLLAMA_BASE_URL}/api/tags")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+        return [m["name"] for m in data.get("models", [])]
+    except Exception:
+        return [MODEL_NAME]
+
+
+def load_history() -> list[dict]:
+    """Load chat history from disk."""
+    try:
+        if HISTORY_FILE.exists():
+            return json.loads(HISTORY_FILE.read_text())
+    except (json.JSONDecodeError, OSError):
+        pass
+    return []
+
+
+def save_history(history: list[dict]):
+    """Save chat history to disk."""
+    try:
+        NOTES_DIR.mkdir(parents=True, exist_ok=True)
+        HISTORY_FILE.write_text(json.dumps(history, indent=2))
+    except OSError:
+        pass
+
+
+def get_llm(model_name: str | None = None):
+    """Create and return a ChatOllama instance.
+
+    Args:
+        model_name: Override the default model. If None, uses MODEL_NAME.
+    """
     from langchain_ollama import ChatOllama
     return ChatOllama(
-        model=MODEL_NAME,
+        model=model_name or MODEL_NAME,
         base_url=OLLAMA_BASE_URL,
         temperature=0,
         num_ctx=2048,       # Small context window to save RAM

@@ -10,16 +10,22 @@ from tools.calendar_tool import get_calendar_events
 from tools.clipboard import read_clipboard, write_clipboard
 from tools.datetime_tool import get_current_datetime
 from tools.file_ops import list_directory, organize_files, read_file, write_file
+from tools.find_files import find_files
 from tools.macos_actions import open_url_or_app, send_notification, take_screenshot
 from tools.mail_draft import compose_email_draft
 from tools.md_to_pdf import markdown_to_pdf
+from tools.music_control import control_music
 from tools.notes import get_notes, save_note
 from tools.pdf_reader import read_pdf
 from tools.reminders import get_reminders
 from tools.rss import fetch_rss
 from tools.shell import run_shell
 from tools.sports import get_live_scores
+from tools.stock_price import get_stock_price
+from tools.summarize_url import summarize_url
 from tools.system_info import get_system_info
+from tools.translate import translate_text
+from tools.unit_converter import convert_units
 from tools.videos import search_videos
 from tools.weather import get_weather
 from tools.web_search import web_search
@@ -30,12 +36,15 @@ ALL_TOOLS = [
     read_file, write_file, list_directory, organize_files, read_pdf, markdown_to_pdf, run_shell,
     # Research & knowledge
     web_search, fetch_rss, search_videos, get_video_transcript, get_live_scores, save_note, get_notes,
+    summarize_url, find_files,
     # Utilities
     get_current_datetime, calculate, get_weather, get_system_info,
+    get_stock_price, convert_units, translate_text,
     # macOS integration
     read_clipboard, write_clipboard,
     send_notification, open_url_or_app, take_screenshot,
     get_reminders, get_calendar_events, compose_email_draft,
+    control_music,
 ]
 
 
@@ -111,6 +120,30 @@ def _parse_json_list(text: str) -> list[str]:
     return lines if lines else [text.strip()]
 
 
+_FAST_PATH_PATTERNS = [
+    ({"time", "date", "day", "today", "now"}, "get_current_datetime"),
+    ({"weather", "temperature", "forecast"}, "get_weather"),
+    ({"calculate", "math", "compute", "sum", "add", "subtract", "multiply", "divide"}, "calculate"),
+    ({"battery", "disk", "memory", "cpu", "ram", "storage"}, "get_system_info"),
+    ({"clipboard", "paste", "copied"}, "read_clipboard"),
+    ({"reminder", "reminders"}, "get_reminders"),
+    ({"calendar", "schedule", "events", "meeting"}, "get_calendar_events"),
+    ({"score", "cricket", "ipl", "football", "soccer", "nba", "nfl"}, "get_live_scores"),
+    ({"note", "notes"}, "get_notes"),
+]
+
+
+def _is_simple_task(task: str) -> bool:
+    """Detect simple single-tool tasks that can skip the planner."""
+    words = set(task.lower().split())
+    # Short tasks that clearly map to one tool
+    if len(words) <= 8:
+        for keywords, _ in _FAST_PATH_PATTERNS:
+            if words & keywords:
+                return True
+    return False
+
+
 def supervisor_node(state: AgentState) -> dict:
     """Decide which agent should run next based on the current state. No LLM call."""
     if state.get("error"):
@@ -121,6 +154,9 @@ def supervisor_node(state: AgentState) -> dict:
     summary = state.get("summary", "")
 
     if not plan:
+        # Fast path: simple tasks skip the planner
+        if _is_simple_task(state["task"]):
+            return {"plan": [state["task"]], "current_agent": "executor"}
         return {"current_agent": "planner"}
     elif len(results) < len(plan):
         return {"current_agent": "executor"}
@@ -130,12 +166,25 @@ def supervisor_node(state: AgentState) -> dict:
         return {"current_agent": "END"}
 
 
+def _format_conversation_context(history: list[dict], max_entries: int = 3) -> str:
+    """Format recent conversation history as context for the LLM."""
+    if not history:
+        return ""
+    recent = history[-max_entries:]
+    lines = []
+    for entry in recent:
+        lines.append(f"- User asked: {entry['task'][:100]}")
+        lines.append(f"  Result: {entry['summary'][:150]}")
+    return "\n\nRecent conversation:\n" + "\n".join(lines)
+
+
 def planner_node(state: AgentState) -> dict:
     """Break the user's task into 2-3 subtasks. Keeps plans short to minimize LLM calls."""
-    llm = get_llm()
+    llm = get_llm(state.get("model_name"))
     task = state["task"]
 
     tool_names = ", ".join(t.name for t in ALL_TOOLS)
+    conv_context = _format_conversation_context(state.get("conversation_history", []))
     messages = [
         SystemMessage(content=(
             "You are a task planner. Break the user's task into 2-3 action steps. "
@@ -144,7 +193,7 @@ def planner_node(state: AgentState) -> dict:
             "Return a JSON array of strings. Keep each step under 10 words.\n"
             'Example: ["Get current weather in Mumbai", "Summarize the results"]'
         )),
-        HumanMessage(content=task),
+        HumanMessage(content=f"{task}{conv_context}"),
     ]
 
     try:
@@ -160,7 +209,7 @@ def planner_node(state: AgentState) -> dict:
 
 def executor_node(state: AgentState) -> dict:
     """Execute each subtask using available tools."""
-    llm = get_llm()
+    llm = get_llm(state.get("model_name"))
     plan = state.get("plan", [])
     existing_results = state.get("results", [])
     results = list(existing_results)
@@ -214,7 +263,7 @@ def executor_node(state: AgentState) -> dict:
 
 def summarizer_node(state: AgentState) -> dict:
     """Compile results into a final summary."""
-    llm = get_llm()
+    llm = get_llm(state.get("model_name"))
     task = state["task"]
     results = state.get("results", [])
 

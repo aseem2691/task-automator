@@ -15,17 +15,28 @@ A multi-agent personal productivity assistant built with LangGraph, LangChain, O
 
 ```
 task-automator/
-├── config.py              # Ollama settings, auto-start, health check, LLM factory
+├── config.py              # Ollama settings, auto-start, health check, LLM factory, history persistence
 ├── requirements.txt
 ├── venv/                  # Python virtual environment
+├── .streamlit/
+│   └── config.toml        # Streamlit theme (dark mode)
+├── api/
+│   ├── main.py            # FastAPI backend (POST /task, SSE streaming, history)
+│   └── models.py          # Pydantic request/response models
 ├── graph/
-│   ├── state.py           # AgentState TypedDict
-│   ├── nodes.py           # Supervisor, Planner, Executor, Summarizer + ALL_TOOLS registry
+│   ├── state.py           # AgentState TypedDict (with conversation_history, model_name)
+│   ├── nodes.py           # Supervisor, Planner, Executor, Summarizer + ALL_TOOLS registry (32 tools)
 │   └── orchestrator.py    # StateGraph wiring + run() entry point
 ├── tools/
 │   ├── file_ops.py        # read/write/list/organize with deny-list for system dirs
-│   ├── shell.py           # Safe shell execution with deny-list
+│   ├── shell.py           # Safe shell execution with ALLOWLIST
 │   ├── web_search.py      # DuckDuckGo via ddgs
+│   ├── summarize_url.py   # Fetch + strip HTML from URLs
+│   ├── find_files.py      # Spotlight/mdfind file search
+│   ├── stock_price.py     # Yahoo Finance stock quotes (no API key)
+│   ├── unit_converter.py  # Length, weight, volume, temperature conversions
+│   ├── translate.py       # LLM-based text translation (offline)
+│   ├── music_control.py   # Music.app control via AppleScript
 │   ├── notes.py           # Local JSON note storage
 │   ├── clipboard.py       # macOS pbcopy/pbpaste
 │   ├── datetime_tool.py   # Current date/time/day/timezone
@@ -43,7 +54,7 @@ task-automator/
 │   ├── videos.py          # DuckDuckGo video search
 │   └── youtube.py         # YouTube transcript extraction via youtube-transcript-api
 └── ui/
-    └── app.py             # Streamlit chat UI with real-time agent progress
+    └── app.py             # Streamlit chat UI with model selector, history export, dark mode
 ```
 
 ## Current State — What's Working
@@ -61,14 +72,14 @@ task-automator/
 - Auto-pulls the model on first use
 - No manual terminal commands needed
 
-### 26 Registered Tools
+### 32 Registered Tools
 1. **File & shell**: `read_file`, `write_file`, `list_directory`, `organize_files`, `read_pdf`, `markdown_to_pdf`, `run_shell`
-2. **Research & knowledge**: `web_search`, `fetch_rss`, `search_videos`, `get_video_transcript`, `get_live_scores`, `save_note`, `get_notes`
-3. **Utilities**: `get_current_datetime`, `calculate`, `get_weather`, `get_system_info`
-4. **macOS integration**: `read_clipboard`, `write_clipboard`, `send_notification`, `open_url_or_app`, `take_screenshot`, `get_reminders`, `get_calendar_events`, `compose_email_draft`
+2. **Research & knowledge**: `web_search`, `fetch_rss`, `search_videos`, `get_video_transcript`, `get_live_scores`, `save_note`, `get_notes`, `summarize_url`, `find_files`
+3. **Utilities**: `get_current_datetime`, `calculate`, `get_weather`, `get_system_info`, `get_stock_price`, `convert_units`, `translate_text`
+4. **macOS integration**: `read_clipboard`, `write_clipboard`, `send_notification`, `open_url_or_app`, `take_screenshot`, `get_reminders`, `get_calendar_events`, `compose_email_draft`, `control_music`
 
 ### Verified Working
-- All 26 tools load via `ALL_TOOLS` and dispatch by name through the executor
+- All 32 tools load via `ALL_TOOLS` and dispatch by name through the executor
 - Streamlit UI launches and executes tasks end-to-end
 - Auto-start of Ollama works
 - SSL cert issue with weather/RSS fixed using `certifi`
@@ -101,25 +112,30 @@ task-automator/
 - [x] **Markdown → PDF**: convert notes to PDFs via `pandoc` or `markdown2`
 
 ### Priority 3 — Agent quality
-- [ ] **Tool selection hints in planner**: planner should suggest which tools each subtask likely needs
-- [ ] **Self-correction loop**: if executor output looks wrong (e.g., empty search results), retry with a reworded query
-- [ ] **Conversation memory**: remember previous tasks in the same Streamlit session so follow-up questions work
+- [x] **Per-subtask tool subsetting**: executor picks top 8 tools per subtask by keyword overlap, fixing tool-call accuracy on small models
+- [x] **Fast-path bypass**: simple tasks (<=8 words, matching known patterns) skip planner entirely
+- [x] **Conversation memory**: previous task+summary pairs passed as context to planner/executor for follow-up questions
+- [x] **Shell security**: switched from deny-list to allowlist — only ~50 safe commands permitted
+- [x] **Persist task history**: chat history saved to `~/.task-automator/history.json`, survives app restarts
+- [ ] **Self-correction loop**: if executor output looks wrong, retry with a reworded query
 - [ ] **Streaming tokens to UI**: show LLM output as it's generated, not just after each node completes
 
 ### Priority 4 — Mobile / cross-platform
-- [ ] **Refactor backend into FastAPI** so the graph runs as a service
-- [ ] **React Native mobile client** that talks to the FastAPI backend (Android first, per original goal)
+- [x] **FastAPI backend**: `api/main.py` with POST /task, POST /task/stream (SSE), GET /history, GET /models, DELETE /history
+- [ ] **React Native mobile client** that talks to the FastAPI backend
 - [ ] **Remote Ollama support**: let the mobile client use a Mac running Ollama as the LLM server
 
 ### Priority 5 — Polish
+- [x] **Model selector**: sidebar dropdown in Streamlit, queries Ollama for available models
+- [x] **Dark mode**: `.streamlit/config.toml` with dark theme
+- [x] **Export task history**: download button in sidebar exports JSON
 - [ ] Pin exact package versions in `requirements.txt`
 - [ ] Add unit tests for each tool
 - [ ] Add a `--debug` flag to show full LLM prompts/responses
-- [ ] Dark mode / theming for Streamlit UI
-- [ ] Export task history as JSON
 
 ## How to Run
 
+### Streamlit UI
 ```bash
 cd ~/Programming/task-automator
 source venv/bin/activate
@@ -127,6 +143,15 @@ streamlit run ui/app.py
 ```
 
 Ollama auto-starts, `llama3.2` auto-pulls on first run. Browser opens at `http://localhost:8501`.
+
+### FastAPI Backend
+```bash
+cd ~/Programming/task-automator
+source venv/bin/activate
+uvicorn api.main:app --reload --port 8000
+```
+
+API docs at `http://localhost:8000/docs`. Endpoints: POST /task, POST /task/stream (SSE), GET /history, GET /models, DELETE /history.
 
 ## Example Tasks to Try
 

@@ -11,3 +11,5 @@ class AgentState(TypedDict):
     messages: Annotated[list, add_messages]           # Chat history
     current_agent: str                               # Which agent is active
     error: str | None                                # Error message if any
+    conversation_history: list[dict]                 # Previous task+summary pairs for context
+    model_name: str                                  # Selected Ollama model override

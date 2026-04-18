@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 
@@ -6,7 +7,15 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import streamlit as st
 
-from config import WORKSPACE_DIR, check_ollama, ensure_dirs
+from config import (
+    MODEL_NAME,
+    WORKSPACE_DIR,
+    check_ollama,
+    ensure_dirs,
+    get_available_models,
+    load_history,
+    save_history,
+)
 from graph.orchestrator import run
 
 # Page config
@@ -21,16 +30,39 @@ st.caption("Multi-agent AI assistant powered by LangGraph + Ollama")
 
 # Initialize session state
 if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
+    st.session_state.chat_history = load_history()
 if "running" not in st.session_state:
     st.session_state.running = False
+if "selected_model" not in st.session_state:
+    st.session_state.selected_model = MODEL_NAME
 
 # Sidebar
 with st.sidebar:
+    st.header("Settings")
+
+    # Model selector
+    available_models = get_available_models()
+    if st.session_state.selected_model not in available_models:
+        available_models.append(st.session_state.selected_model)
+    selected = st.selectbox(
+        "Model",
+        available_models,
+        index=available_models.index(st.session_state.selected_model),
+    )
+    st.session_state.selected_model = selected
+
+    # Theme toggle
+    if "dark_mode" not in st.session_state:
+        st.session_state.dark_mode = False
+    st.toggle("Dark mode", key="dark_mode")
+
+    st.divider()
     st.header("Task History")
     if st.session_state.chat_history:
         for i, entry in enumerate(reversed(st.session_state.chat_history)):
-            with st.expander(f"Task {len(st.session_state.chat_history) - i}: {entry['task'][:40]}..."):
+            task_num = len(st.session_state.chat_history) - i
+            label = entry["task"][:40]
+            with st.expander(f"Task {task_num}: {label}..."):
                 st.write(entry["summary"])
     else:
         st.write("No tasks yet. Try one!")
@@ -38,9 +70,20 @@ with st.sidebar:
     st.divider()
     st.write(f"**Workspace:** `{WORKSPACE_DIR}`")
 
-    if st.button("Clear History"):
-        st.session_state.chat_history = []
-        st.rerun()
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Clear History"):
+            st.session_state.chat_history = []
+            save_history([])
+            st.rerun()
+    with col2:
+        if st.session_state.chat_history:
+            st.download_button(
+                "Export JSON",
+                data=json.dumps(st.session_state.chat_history, indent=2),
+                file_name="task_history.json",
+                mime="application/json",
+            )
 
 # Display chat messages
 for entry in st.session_state.chat_history:
@@ -67,7 +110,11 @@ if prompt := st.chat_input("Describe a task... (e.g., 'search for latest Python 
         summary = ""
         with st.status("Working on your task...", expanded=True) as status:
             try:
-                for event in run(prompt):
+                for event in run(
+                    prompt,
+                    conversation_history=st.session_state.chat_history,
+                    model_name=st.session_state.selected_model,
+                ):
                     for node_name, node_output in event.items():
                         if node_name == "supervisor":
                             next_agent = node_output.get("current_agent", "")
@@ -109,8 +156,9 @@ if prompt := st.chat_input("Describe a task... (e.g., 'search for latest Python 
             st.markdown("---")
             st.markdown(summary)
 
-        # Save to history
+        # Save to history (session + disk)
         st.session_state.chat_history.append({
             "task": prompt,
             "summary": summary or "No summary generated.",
         })
+        save_history(st.session_state.chat_history)

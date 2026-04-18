@@ -51,11 +51,14 @@ def build_graph():
 app = build_graph()
 
 
-def run(task: str):
+def run(task: str, conversation_history: list[dict] | None = None,
+        model_name: str | None = None):
     """Run the task automator and yield state updates for streaming.
 
     Args:
         task: The user's task description.
+        conversation_history: Previous task+summary pairs for context.
+        model_name: Override the default Ollama model.
 
     Yields:
         dict: State updates from each node execution.
@@ -68,32 +71,33 @@ def run(task: str):
         messages=[],
         current_agent="",
         error=None,
+        conversation_history=conversation_history or [],
+        model_name=model_name or "",
     )
 
     for event in app.stream(initial_state, {"recursion_limit": 15}):
         yield event
 
 
-def run_sync(task: str) -> str:
+def run_sync(task: str, conversation_history: list[dict] | None = None,
+             model_name: str | None = None) -> str:
     """Run the task automator and return the final summary.
 
     Args:
         task: The user's task description.
+        conversation_history: Previous task+summary pairs for context.
+        model_name: Override the default Ollama model.
 
     Returns:
         The final summary string.
     """
-    final_state = None
-    for event in run(task):
-        final_state = event
-
-    # Extract summary from the last event
-    if final_state:
-        for node_output in final_state.values():
+    summary = ""
+    for event in run(task, conversation_history, model_name):
+        for node_output in event.values():
             if isinstance(node_output, dict) and node_output.get("summary"):
-                return node_output["summary"]
+                summary = node_output["summary"]
 
-    return "Task completed but no summary was generated."
+    return summary or "Task completed but no summary was generated."
 
 
 if __name__ == "__main__":
